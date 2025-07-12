@@ -221,9 +221,57 @@ void Bootstrapping(benchmark::State &state) {
 
     while(state.KeepRunning()) {
         auto ciphertextAfter = cryptoContext->EvalBootstrap(ciph);
+        benchmark::DoNotOptimize(ciphertextAfter);
     }
 }
 
 BENCHMARK(Bootstrapping)->Unit(benchmark::kMillisecond)->MinTime(minTime);
+
+void MultBootstrappChain(benchmark::State &state) {
+    CCParams<CryptoContextCKKSRNS> parameters;
+
+    SecretKeyDist secretKeyDist = UNIFORM_TERNARY;
+    parameters.SetSecretKeyDist(secretKeyDist);
+    parameters.SetSecurityLevel(HEStd_NotSet);
+    parameters.SetRingDim(1 << 14);
+    parameters.SetNumLargeDigits(3);
+    parameters.SetKeySwitchTechnique(HYBRID);
+    parameters.SetScalingModSize(50);
+    parameters.SetScalingTechnique(FLEXIBLEAUTO);
+    parameters.SetFirstModSize(58);
+
+    std::vector<uint32_t> levelBudget = {3, 3};
+    std::vector<uint32_t> bsgsDim = {0, 0};
+    uint32_t levelsAvailableAfterBootstrap = 10;
+    usint depth = levelsAvailableAfterBootstrap + FHECKKSRNS::GetBootstrapDepth(levelBudget, secretKeyDist);
+    parameters.SetMultiplicativeDepth(depth);
+
+    CryptoContext<DCRTPoly> cryptoContext = GenCryptoContext(parameters);
+    cryptoContext->Enable(PKE);
+    cryptoContext->Enable(KEYSWITCH);
+    cryptoContext->Enable(LEVELEDSHE);
+    cryptoContext->Enable(ADVANCEDSHE);
+    cryptoContext->Enable(FHE);
+
+    usint numSlots = 8192; // Number of slots for CKKS
+    cryptoContext->EvalBootstrapSetup(levelBudget, bsgsDim, numSlots);
+    auto keyPair = cryptoContext->KeyGen();
+    cryptoContext->EvalMultKeyGen(keyPair.secretKey);
+    cryptoContext->EvalBootstrapKeyGen(keyPair.secretKey, numSlots);
+
+    std::vector<double> x1 = GenerateRandomVector(numSlots); // random plaintext
+
+    Plaintext ptxt = cryptoContext->MakeCKKSPackedPlaintext(x1, 1, depth - 1, nullptr, numSlots); // depth 1, levels 0
+    ptxt->SetLength(numSlots);
+
+    Ciphertext<DCRTPoly> ciph = cryptoContext->Encrypt(keyPair.publicKey, ptxt); // no levels left
+
+    while(state.KeepRunning()) {
+        ciph = cryptoContext->EvalMult(ciph, ciph); // multiply the ciphertext with itself
+        benchmark::DoNotOptimize(ciph);
+    }
+}
+
+BENCHMARK(MultBootstrappChain)->Unit(benchmark::kMillisecond)->MinTime(minTime);
 
 BENCHMARK_MAIN();
